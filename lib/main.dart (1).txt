@@ -1,0 +1,2500 @@
+import 'package:flutter/material.dart';
+import 'dart:async';
+import 'dart:math';
+import 'dart:convert';
+
+void main() {
+  runApp(const DotsAndBoxesApp());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// APP SETTINGS  (in-memory, no plugin needed)
+// ─────────────────────────────────────────────────────────────────────────────
+class AppSettings {
+  static double volume = 0.7;
+  static Color player1Color = const Color(0xFF6C63FF);
+  static Color player2Color = const Color(0xFFFF6584);
+  static Color lineColor = const Color(0xFF6C63FF);
+  static Color uiAccentColor = const Color(0xFF6C63FF);
+  static bool isDarkMode = false;
+
+  static ThemeData get lightTheme => ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+            seedColor: uiAccentColor, brightness: Brightness.light),
+        scaffoldBackgroundColor: Colors.white,
+        cardColor: Colors.white,
+      );
+
+  static ThemeData get darkTheme => ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+            seedColor: uiAccentColor, brightness: Brightness.dark),
+        scaffoldBackgroundColor: const Color(0xFF1A1A2E),
+        cardColor: const Color(0xFF16213E),
+      );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GAME HISTORY  (stored in-memory, serialised to a simple static list)
+// ─────────────────────────────────────────────────────────────────────────────
+class GameRecord {
+  final String result; // 'win' | 'lose' | 'draw'
+  final int score1;
+  final int score2;
+  final DateTime playedAt;
+  final bool vsAI;
+
+  GameRecord({
+    required this.result,
+    required this.score1,
+    required this.score2,
+    required this.playedAt,
+    required this.vsAI,
+  });
+}
+
+class GameHistory {
+  static final List<GameRecord> _records = [];
+
+  static List<GameRecord> get last10 =>
+      _records.reversed.take(10).toList();
+
+  static void add(GameRecord record) {
+    _records.add(record);
+    if (_records.length > 50) _records.removeAt(0);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THEME NOTIFIER
+// ─────────────────────────────────────────────────────────────────────────────
+class ThemeNotifier extends ChangeNotifier {
+  static final ThemeNotifier _instance = ThemeNotifier._();
+  factory ThemeNotifier() => _instance;
+  ThemeNotifier._();
+
+  bool get isDark => AppSettings.isDarkMode;
+
+  void toggle(bool dark) {
+    AppSettings.isDarkMode = dark;
+    notifyListeners();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROOT APP
+// ─────────────────────────────────────────────────────────────────────────────
+class DotsAndBoxesApp extends StatefulWidget {
+  const DotsAndBoxesApp({super.key});
+
+  @override
+  State<DotsAndBoxesApp> createState() => _DotsAndBoxesAppState();
+}
+
+class _DotsAndBoxesAppState extends State<DotsAndBoxesApp> {
+  @override
+  void initState() {
+    super.initState();
+    ThemeNotifier().addListener(() => setState(() {}));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Dots & Boxes',
+      debugShowCheckedModeBanner: false,
+      theme: AppSettings.lightTheme,
+      darkTheme: AppSettings.darkTheme,
+      themeMode:
+          AppSettings.isDarkMode ? ThemeMode.dark : ThemeMode.light,
+      home: const SplashScreen(),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LOGO PAINTER
+// ─────────────────────────────────────────────────────────────────────────────
+class LogoPainter extends CustomPainter {
+  final Color color;
+  const LogoPainter({this.color = const Color(0xFF6C63FF)});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final dotPaint = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill;
+    final linePaint = Paint()
+      ..color = color
+      ..strokeWidth = 3
+      ..style = PaintingStyle.stroke;
+    final boxPaint = Paint()
+      ..color = color.withOpacity(0.2)
+      ..style = PaintingStyle.fill;
+
+    final cellSize = size.width / 2;
+    canvas.drawRect(
+        Rect.fromLTWH(cellSize * 0.1, cellSize * 0.1,
+            cellSize * 0.8, cellSize * 0.8),
+        boxPaint);
+    canvas.drawRect(
+        Rect.fromLTWH(cellSize * 1.1, cellSize * 1.1,
+            cellSize * 0.8, cellSize * 0.8),
+        boxPaint);
+
+    for (int row = 0; row < 3; row++) {
+      for (int col = 0; col < 3; col++) {
+        final x = col * cellSize;
+        final y = row * cellSize;
+        if (col < 2)
+          canvas.drawLine(Offset(x, y), Offset(x + cellSize, y), linePaint);
+        if (row < 2)
+          canvas.drawLine(Offset(x, y), Offset(x, y + cellSize), linePaint);
+        canvas.drawCircle(Offset(x, y), 6, dotPaint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter old) => false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SPLASH SCREEN
+// ─────────────────────────────────────────────────────────────────────────────
+class SplashScreen extends StatefulWidget {
+  const SplashScreen({super.key});
+
+  @override
+  State<SplashScreen> createState() => _SplashScreenState();
+}
+
+class _SplashScreenState extends State<SplashScreen>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  late Animation<double> _fade;
+  late Animation<double> _scale;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 1600));
+    _fade = Tween<double>(begin: 0, end: 1)
+        .animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOut));
+    _scale = Tween<double>(begin: 0.4, end: 1)
+        .animate(CurvedAnimation(parent: _ctrl, curve: Curves.elasticOut));
+    _ctrl.forward();
+
+    Timer(const Duration(seconds: 3), () {
+      if (mounted)
+        Navigator.pushReplacement(context,
+            MaterialPageRoute(builder: (_) => const HomeScreen()));
+    });
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bg = AppSettings.isDarkMode
+        ? const Color(0xFF1A1A2E)
+        : Colors.white;
+    return Scaffold(
+      backgroundColor: bg,
+      body: Center(
+        child: FadeTransition(
+          opacity: _fade,
+          child: ScaleTransition(
+            scale: _scale,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  width: 120,
+                  height: 120,
+                  child: CustomPaint(
+                      painter: LogoPainter(
+                          color: AppSettings.uiAccentColor)),
+                ),
+                const SizedBox(height: 24),
+                Text(
+                  'Dots & Boxes',
+                  style: TextStyle(
+                    fontSize: 36,
+                    fontWeight: FontWeight.w900,
+                    color: AppSettings.uiAccentColor,
+                    letterSpacing: 2,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Connect · Claim · Conquer',
+                  style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey.shade500,
+                      letterSpacing: 1.5),
+                ),
+                const SizedBox(height: 48),
+                CircularProgressIndicator(
+                    color: AppSettings.uiAccentColor, strokeWidth: 2),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HOME SCREEN
+// ─────────────────────────────────────────────────────────────────────────────
+class HomeScreen extends StatelessWidget {
+  const HomeScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = AppSettings.isDarkMode;
+    final accent = AppSettings.uiAccentColor;
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const SizedBox(height: 20),
+                SizedBox(
+                  width: 140,
+                  height: 140,
+                  child: CustomPaint(painter: LogoPainter(color: accent)),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Dots & Boxes',
+                  style: TextStyle(
+                    fontSize: 38,
+                    fontWeight: FontWeight.w900,
+                    color: accent,
+                    letterSpacing: 2,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'The Classic Strategy Game',
+                  style: TextStyle(
+                      fontSize: 14,
+                      color: isDark ? Colors.grey.shade400 : Colors.grey),
+                ),
+                const SizedBox(height: 56),
+                _MenuButton(
+                  label: 'PLAY',
+                  icon: Icons.play_arrow_rounded,
+                  isPrimary: true,
+                  onTap: () => Navigator.push(context,
+                      MaterialPageRoute(
+                          builder: (_) => const ModeSelectScreen())),
+                ),
+                const SizedBox(height: 16),
+                _MenuButton(
+                  label: 'HISTORY',
+                  icon: Icons.history_rounded,
+                  isPrimary: false,
+                  onTap: () => Navigator.push(context,
+                      MaterialPageRoute(
+                          builder: (_) => const HistoryScreen())),
+                ),
+                const SizedBox(height: 16),
+                _MenuButton(
+                  label: 'SETTINGS',
+                  icon: Icons.settings_rounded,
+                  isPrimary: false,
+                  onTap: () => Navigator.push(context,
+                      MaterialPageRoute(
+                          builder: (_) => const SettingsScreen())),
+                ),
+                const SizedBox(height: 16),
+                _MenuButton(
+                  label: 'HOW TO PLAY',
+                  icon: Icons.help_outline_rounded,
+                  isPrimary: false,
+                  onTap: () => Navigator.push(context,
+                      MaterialPageRoute(
+                          builder: (_) => const HowToPlayScreen())),
+                ),
+                const SizedBox(height: 16),
+                _MenuButton(
+                  label: 'ABOUT',
+                  icon: Icons.info_outline_rounded,
+                  isPrimary: false,
+                  onTap: () => Navigator.push(context,
+                      MaterialPageRoute(
+                          builder: (_) => const AboutScreen())),
+                ),
+                const SizedBox(height: 30),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MenuButton extends StatefulWidget {
+  final String label;
+  final IconData icon;
+  final bool isPrimary;
+  final VoidCallback onTap;
+
+  const _MenuButton({
+    required this.label,
+    required this.icon,
+    required this.isPrimary,
+    required this.onTap,
+  });
+
+  @override
+  State<_MenuButton> createState() => _MenuButtonState();
+}
+
+class _MenuButtonState extends State<_MenuButton> {
+  bool _pressed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = AppSettings.uiAccentColor;
+    return GestureDetector(
+      onTapDown: (_) => setState(() => _pressed = true),
+      onTapUp: (_) {
+        setState(() => _pressed = false);
+        widget.onTap();
+      },
+      onTapCancel: () => setState(() => _pressed = false),
+      child: AnimatedScale(
+        scale: _pressed ? 0.94 : 1.0,
+        duration: const Duration(milliseconds: 120),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          width: 240,
+          height: 60,
+          decoration: BoxDecoration(
+            color: widget.isPrimary ? accent : Colors.transparent,
+            borderRadius: BorderRadius.circular(30),
+            border: Border.all(color: accent, width: 2),
+            boxShadow: widget.isPrimary
+                ? [
+                    BoxShadow(
+                        color: accent.withOpacity(0.4),
+                        blurRadius: 20,
+                        offset: const Offset(0, 8))
+                  ]
+                : null,
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(widget.icon,
+                  color: widget.isPrimary ? Colors.white : accent, size: 24),
+              const SizedBox(width: 10),
+              Text(
+                widget.label,
+                style: TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.bold,
+                  color: widget.isPrimary ? Colors.white : accent,
+                  letterSpacing: 1.5,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HISTORY SCREEN
+// ─────────────────────────────────────────────────────────────────────────────
+class HistoryScreen extends StatelessWidget {
+  const HistoryScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final records = GameHistory.last10;
+    final accent = AppSettings.uiAccentColor;
+
+    return Scaffold(
+      appBar: _buildAppBar(context, 'Game History', accent),
+      body: records.isEmpty
+          ? Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.sports_esports_rounded,
+                      size: 72, color: Colors.grey.shade400),
+                  const SizedBox(height: 16),
+                  Text('No games played yet',
+                      style: TextStyle(
+                          fontSize: 18,
+                          color: Colors.grey.shade500,
+                          fontWeight: FontWeight.w500)),
+                  const SizedBox(height: 8),
+                  Text('Play a game and come back!',
+                      style: TextStyle(
+                          fontSize: 14, color: Colors.grey.shade400)),
+                ],
+              ),
+            )
+          : ListView.separated(
+              padding: const EdgeInsets.all(16),
+              itemCount: records.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 10),
+              itemBuilder: (context, i) {
+                final r = records[i];
+                return _HistoryCard(record: r, index: i);
+              },
+            ),
+    );
+  }
+}
+
+class _HistoryCard extends StatelessWidget {
+  final GameRecord record;
+  final int index;
+
+  const _HistoryCard({required this.record, required this.index});
+
+  @override
+  Widget build(BuildContext context) {
+    Color resultColor;
+    IconData resultIcon;
+    String resultLabel;
+
+    switch (record.result) {
+      case 'win':
+        resultColor = const Color(0xFF43AA8B);
+        resultIcon = Icons.emoji_events_rounded;
+        resultLabel = 'WIN';
+        break;
+      case 'lose':
+        resultColor = const Color(0xFFE63946);
+        resultIcon = Icons.close_rounded;
+        resultLabel = 'LOSE';
+        break;
+      default:
+        resultColor = const Color(0xFFFF9F1C);
+        resultIcon = Icons.handshake_rounded;
+        resultLabel = 'DRAW';
+    }
+
+    final dt = record.playedAt;
+    final dateStr =
+        '${dt.day}/${dt.month}/${dt.year}  ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: resultColor.withOpacity(0.07),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: resultColor.withOpacity(0.3)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+                color: resultColor, borderRadius: BorderRadius.circular(14)),
+            child: Icon(resultIcon, color: Colors.white, size: 24),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(resultLabel,
+                        style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            fontSize: 16,
+                            color: resultColor)),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                          color: Colors.grey.shade200,
+                          borderRadius: BorderRadius.circular(8)),
+                      child: Text(
+                        record.vsAI ? 'vs AI' : 'vs Player',
+                        style: TextStyle(
+                            fontSize: 11, color: Colors.grey.shade600),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Score: ${record.score1} – ${record.score2}',
+                  style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey.shade600,
+                      fontWeight: FontWeight.w500),
+                ),
+                const SizedBox(height: 2),
+                Text(dateStr,
+                    style: TextStyle(
+                        fontSize: 12, color: Colors.grey.shade500)),
+              ],
+            ),
+          ),
+          Text(
+            '#${index + 1}',
+            style: TextStyle(
+                color: Colors.grey.shade400,
+                fontWeight: FontWeight.bold,
+                fontSize: 13),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SETTINGS SCREEN  (top-level with two option cards)
+// ─────────────────────────────────────────────────────────────────────────────
+class SettingsScreen extends StatelessWidget {
+  const SettingsScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = AppSettings.uiAccentColor;
+    return Scaffold(
+      appBar: _buildAppBar(context, 'Settings', accent),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          _SettingsCard(
+            icon: Icons.palette_rounded,
+            iconColor: const Color(0xFF6C63FF),
+            title: 'Game Colors',
+            subtitle: 'Change line and UI colors',
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(
+                    builder: (_) => const ColorSettingsScreen())),
+          ),
+          const SizedBox(height: 16),
+          _SettingsCard(
+            icon: Icons.dark_mode_rounded,
+            iconColor: const Color(0xFF2EC4B6),
+            title: 'Theme Settings',
+            subtitle: 'Toggle light / dark mode',
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(
+                    builder: (_) => const ThemeSettingsScreen())),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsCard extends StatelessWidget {
+  final IconData icon;
+  final Color iconColor;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  const _SettingsCard({
+    required this.icon,
+    required this.iconColor,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: iconColor.withOpacity(0.07),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: iconColor.withOpacity(0.3), width: 1.5),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                  color: iconColor,
+                  borderRadius: BorderRadius.circular(16)),
+              child: Icon(icon, color: Colors.white, size: 28),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.bold,
+                          color: iconColor)),
+                  const SizedBox(height: 4),
+                  Text(subtitle,
+                      style: TextStyle(
+                          fontSize: 13, color: Colors.grey.shade600)),
+                ],
+              ),
+            ),
+            Icon(Icons.arrow_forward_ios_rounded,
+                color: iconColor, size: 18),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COLOR SETTINGS SCREEN
+// ─────────────────────────────────────────────────────────────────────────────
+class ColorSettingsScreen extends StatefulWidget {
+  const ColorSettingsScreen({super.key});
+
+  @override
+  State<ColorSettingsScreen> createState() => _ColorSettingsScreenState();
+}
+
+class _ColorSettingsScreenState extends State<ColorSettingsScreen> {
+  late Color _p1Color;
+  late Color _p2Color;
+  late Color _lineColor;
+  late Color _uiColor;
+
+  final List<Color> _palette = [
+    const Color(0xFF6C63FF),
+    const Color(0xFFFF6584),
+    const Color(0xFF43AA8B),
+    const Color(0xFFFF9F1C),
+    const Color(0xFF2EC4B6),
+    const Color(0xFFE63946),
+    const Color(0xFF457B9D),
+    const Color(0xFFFFB703),
+    const Color(0xFF9B5DE5),
+    const Color(0xFF00BBF9),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _p1Color = AppSettings.player1Color;
+    _p2Color = AppSettings.player2Color;
+    _lineColor = AppSettings.lineColor;
+    _uiColor = AppSettings.uiAccentColor;
+  }
+
+  void _save() {
+    AppSettings.player1Color = _p1Color;
+    AppSettings.player2Color = _p2Color;
+    AppSettings.lineColor = _lineColor;
+    AppSettings.uiAccentColor = _uiColor;
+    ThemeNotifier().notifyListeners();
+    Navigator.pop(context);
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('Colors saved ✅')));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: _buildAppBar(context, 'Game Colors', _uiColor),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          children: [
+            // ── Live Preview ──────────────────────────────────────────────
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: _uiColor.withOpacity(0.07),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: _uiColor.withOpacity(0.3)),
+              ),
+              child: Column(
+                children: [
+                  Text('Live Preview',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: _uiColor,
+                          fontSize: 16)),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    height: 120,
+                    child: _PreviewBoard(
+                      p1Color: _p1Color,
+                      p2Color: _p2Color,
+                      lineColor: _lineColor,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      _PreviewChip('Player 1', _p1Color),
+                      _PreviewChip('Player 2', _p2Color),
+                      _PreviewChip('Lines', _lineColor),
+                      _PreviewChip('UI', _uiColor),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 24),
+            _colorSection('Player 1 Color', _p1Color,
+                (c) => setState(() => _p1Color = c)),
+            const SizedBox(height: 20),
+            _colorSection('Player 2 / AI Color', _p2Color,
+                (c) => setState(() => _p2Color = c)),
+            const SizedBox(height: 20),
+            _colorSection('Line Color', _lineColor,
+                (c) => setState(() => _lineColor = c)),
+            const SizedBox(height: 20),
+            _colorSection('UI Accent Color', _uiColor,
+                (c) => setState(() => _uiColor = c)),
+            const SizedBox(height: 32),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _save,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: _uiColor,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(20)),
+                ),
+                child: const Text('Save Colors',
+                    style:
+                        TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _colorSection(
+      String label, Color selected, Function(Color) onSelect) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: selected.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: selected.withOpacity(0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 28,
+                height: 28,
+                decoration: BoxDecoration(
+                    color: selected, shape: BoxShape.circle),
+              ),
+              const SizedBox(width: 10),
+              Text(label,
+                  style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: selected,
+                      fontSize: 15)),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: _palette.map((c) {
+              final isSel = c == selected;
+              return GestureDetector(
+                onTap: () => onSelect(c),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    color: c,
+                    shape: BoxShape.circle,
+                    border: isSel
+                        ? Border.all(color: Colors.white, width: 3)
+                        : null,
+                    boxShadow: isSel
+                        ? [
+                            BoxShadow(
+                                color: c.withOpacity(0.5),
+                                blurRadius: 8,
+                                offset: const Offset(0, 3))
+                          ]
+                        : null,
+                  ),
+                  child: isSel
+                      ? const Icon(Icons.check,
+                          color: Colors.white, size: 18)
+                      : null,
+                ),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PreviewChip extends StatelessWidget {
+  final String label;
+  final Color color;
+
+  const _PreviewChip(this.label, this.color);
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Container(
+          width: 24,
+          height: 24,
+          decoration:
+              BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+        const SizedBox(height: 4),
+        Text(label,
+            style: TextStyle(fontSize: 10, color: Colors.grey.shade600)),
+      ],
+    );
+  }
+}
+
+class _PreviewBoard extends StatelessWidget {
+  final Color p1Color;
+  final Color p2Color;
+  final Color lineColor;
+
+  const _PreviewBoard(
+      {required this.p1Color,
+      required this.p2Color,
+      required this.lineColor});
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+        painter: _PreviewBoardPainter(
+            p1Color: p1Color, p2Color: p2Color, lineColor: lineColor),
+        size: const Size(double.infinity, 120));
+  }
+}
+
+class _PreviewBoardPainter extends CustomPainter {
+  final Color p1Color;
+  final Color p2Color;
+  final Color lineColor;
+
+  _PreviewBoardPainter(
+      {required this.p1Color,
+      required this.p2Color,
+      required this.lineColor});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cell = size.height / 3;
+    final cols = (size.width / cell).floor();
+    final rows = 3;
+
+    final linePaint = Paint()
+      ..color = lineColor
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round;
+    final dotPaint = Paint()
+      ..color = Colors.grey.shade700
+      ..style = PaintingStyle.fill;
+
+    // draw some sample lines
+    for (int r = 0; r <= rows; r++) {
+      for (int c = 0; c < cols - 1; c++) {
+        if ((r + c) % 2 == 0) {
+          canvas.drawLine(
+              Offset(c * cell, r * cell.toDouble()),
+              Offset((c + 1) * cell, r * cell.toDouble()),
+              linePaint);
+        }
+      }
+    }
+
+    // fill sample boxes
+    final boxPaint1 = Paint()
+      ..color = p1Color.withOpacity(0.3)
+      ..style = PaintingStyle.fill;
+    final boxPaint2 = Paint()
+      ..color = p2Color.withOpacity(0.3)
+      ..style = PaintingStyle.fill;
+    canvas.drawRect(Rect.fromLTWH(0, 0, cell, cell), boxPaint1);
+    canvas.drawRect(Rect.fromLTWH(cell, cell, cell, cell), boxPaint2);
+
+    // dots
+    for (int r = 0; r <= rows; r++) {
+      for (int c = 0; c < cols; c++) {
+        canvas.drawCircle(
+            Offset(c * cell, r * cell.toDouble()), 5, dotPaint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter old) => true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THEME SETTINGS SCREEN
+// ─────────────────────────────────────────────────────────────────────────────
+class ThemeSettingsScreen extends StatefulWidget {
+  const ThemeSettingsScreen({super.key});
+
+  @override
+  State<ThemeSettingsScreen> createState() => _ThemeSettingsScreenState();
+}
+
+class _ThemeSettingsScreenState extends State<ThemeSettingsScreen> {
+  late bool _isDark;
+
+  @override
+  void initState() {
+    super.initState();
+    _isDark = AppSettings.isDarkMode;
+  }
+
+  void _select(bool dark) {
+    setState(() => _isDark = dark);
+    ThemeNotifier().toggle(dark);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = AppSettings.uiAccentColor;
+    return Scaffold(
+      appBar: _buildAppBar(context, 'Theme Settings', accent),
+      body: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          children: [
+            Text(
+              'Choose your preferred theme',
+              style: TextStyle(
+                  fontSize: 16,
+                  color: Colors.grey.shade600,
+                  fontWeight: FontWeight.w500),
+            ),
+            const SizedBox(height: 32),
+            _ThemeCard(
+              icon: Icons.light_mode_rounded,
+              label: 'Light Mode',
+              description: 'Bright and clean interface',
+              isSelected: !_isDark,
+              color: const Color(0xFFFF9F1C),
+              onTap: () => _select(false),
+            ),
+            const SizedBox(height: 20),
+            _ThemeCard(
+              icon: Icons.dark_mode_rounded,
+              label: 'Dark Mode',
+              description: 'Easy on the eyes at night',
+              isSelected: _isDark,
+              color: const Color(0xFF6C63FF),
+              onTap: () => _select(true),
+            ),
+            const SizedBox(height: 40),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: accent.withOpacity(0.07),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: accent.withOpacity(0.3)),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline_rounded,
+                      color: accent, size: 20),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Theme changes apply instantly across the entire app.',
+                      style: TextStyle(
+                          color: Colors.grey.shade600, fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ThemeCard extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String description;
+  final bool isSelected;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _ThemeCard({
+    required this.icon,
+    required this.label,
+    required this.description,
+    required this.isSelected,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 250),
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: isSelected ? color.withOpacity(0.12) : Colors.transparent,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+              color: isSelected ? color : Colors.grey.shade300,
+              width: isSelected ? 2.5 : 1.5),
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                      color: color.withOpacity(0.2),
+                      blurRadius: 16,
+                      offset: const Offset(0, 6))
+                ]
+              : null,
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 54,
+              height: 54,
+              decoration: BoxDecoration(
+                  color: isSelected ? color : Colors.grey.shade300,
+                  borderRadius: BorderRadius.circular(16)),
+              child: Icon(icon,
+                  color: Colors.white, size: 28),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label,
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                          color: isSelected ? color : Colors.grey.shade700)),
+                  const SizedBox(height: 4),
+                  Text(description,
+                      style: TextStyle(
+                          fontSize: 13, color: Colors.grey.shade500)),
+                ],
+              ),
+            ),
+            if (isSelected)
+              Icon(Icons.check_circle_rounded, color: color, size: 28),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MODE SELECT SCREEN
+// ─────────────────────────────────────────────────────────────────────────────
+class ModeSelectScreen extends StatelessWidget {
+  const ModeSelectScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = AppSettings.uiAccentColor;
+    return Scaffold(
+      appBar: _buildAppBar(context, 'Choose Mode', accent),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text('How do you want to play?',
+                  style: TextStyle(
+                      fontSize: 18,
+                      color: Colors.grey.shade600,
+                      fontWeight: FontWeight.w500)),
+              const SizedBox(height: 40),
+              _ModeCard(
+                icon: Icons.people_rounded,
+                title: 'Player vs Player',
+                subtitle: 'Two players on the same device',
+                color: const Color(0xFF6C63FF),
+                onTap: () => Navigator.push(context,
+                    MaterialPageRoute(
+                        builder: (_) => const GameScreen(vsAI: false))),
+              ),
+              const SizedBox(height: 20),
+              _ModeCard(
+                icon: Icons.smart_toy_rounded,
+                title: 'Player vs AI',
+                subtitle: 'Play against Minimax AI',
+                color: const Color(0xFFFF6584),
+                onTap: () => _showDifficultyDialog(context),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showDifficultyDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('AI Difficulty',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 20,
+                color: Color(0xFF6C63FF))),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _diffOption(ctx, 'Easy 😊', 'Thinks 2 moves ahead',
+                const Color(0xFF43AA8B), 2),
+            const SizedBox(height: 10),
+            _diffOption(ctx, 'Medium 🤔', 'Thinks 4 moves ahead',
+                const Color(0xFFFF9F1C), 4),
+            const SizedBox(height: 10),
+            _diffOption(ctx, 'Hard 🤖', 'Thinks 7 moves – very tough!',
+                const Color(0xFFE63946), 7),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _diffOption(BuildContext ctx, String title, String sub, Color color,
+      int depth) {
+    return GestureDetector(
+      onTap: () {
+        Navigator.pop(ctx);
+        Navigator.push(ctx,
+            MaterialPageRoute(
+                builder: (_) =>
+                    GameScreen(vsAI: true, aiDepth: depth)));
+      },
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color, width: 1.5),
+        ),
+        child: Row(
+          children: [
+            Container(
+                width: 10,
+                height: 10,
+                decoration:
+                    BoxDecoration(color: color, shape: BoxShape.circle)),
+            const SizedBox(width: 12),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: color,
+                        fontSize: 15)),
+                Text(sub,
+                    style: const TextStyle(fontSize: 11, color: Colors.grey)),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ModeCard extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _ModeCard({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.07),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: color.withOpacity(0.4), width: 2),
+          boxShadow: [
+            BoxShadow(
+                color: color.withOpacity(0.15),
+                blurRadius: 20,
+                offset: const Offset(0, 8))
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                  color: color,
+                  borderRadius: BorderRadius.circular(16)),
+              child: Icon(icon, color: Colors.white, size: 30),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.bold,
+                          color: color)),
+                  const SizedBox(height: 4),
+                  Text(subtitle,
+                      style: const TextStyle(
+                          fontSize: 12, color: Colors.grey)),
+                ],
+              ),
+            ),
+            Icon(Icons.arrow_forward_ios_rounded, color: color, size: 16),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GAME LOGIC
+// ─────────────────────────────────────────────────────────────────────────────
+class GameMove {
+  final bool isHorizontal;
+  final int row;
+  final int col;
+  const GameMove(
+      {required this.isHorizontal, required this.row, required this.col});
+}
+
+class GameState {
+  final int rows;
+  final int cols;
+  List<List<bool>> horizontalLines;
+  List<List<bool>> verticalLines;
+  List<List<int>> boxOwner;
+  List<int> scores;
+
+  GameState({
+    required this.rows,
+    required this.cols,
+    required this.horizontalLines,
+    required this.verticalLines,
+    required this.boxOwner,
+    required this.scores,
+  });
+
+  GameState copy() => GameState(
+        rows: rows,
+        cols: cols,
+        horizontalLines:
+            horizontalLines.map((r) => List<bool>.from(r)).toList(),
+        verticalLines:
+            verticalLines.map((r) => List<bool>.from(r)).toList(),
+        boxOwner: boxOwner.map((r) => List<int>.from(r)).toList(),
+        scores: List<int>.from(scores),
+      );
+
+  bool _boxComplete(int r, int c) =>
+      horizontalLines[r][c] &&
+      horizontalLines[r + 1][c] &&
+      verticalLines[r][c] &&
+      verticalLines[r][c + 1];
+
+  int applyMove(GameMove m, int player) {
+    int scored = 0;
+    if (m.isHorizontal) {
+      horizontalLines[m.row][m.col] = true;
+      if (m.row > 0 &&
+          _boxComplete(m.row - 1, m.col) &&
+          boxOwner[m.row - 1][m.col] == 0) {
+        boxOwner[m.row - 1][m.col] = player;
+        scores[player - 1]++;
+        scored++;
+      }
+      if (m.row < rows &&
+          _boxComplete(m.row, m.col) &&
+          boxOwner[m.row][m.col] == 0) {
+        boxOwner[m.row][m.col] = player;
+        scores[player - 1]++;
+        scored++;
+      }
+    } else {
+      verticalLines[m.row][m.col] = true;
+      if (m.col > 0 &&
+          _boxComplete(m.row, m.col - 1) &&
+          boxOwner[m.row][m.col - 1] == 0) {
+        boxOwner[m.row][m.col - 1] = player;
+        scores[player - 1]++;
+        scored++;
+      }
+      if (m.col < cols &&
+          _boxComplete(m.row, m.col) &&
+          boxOwner[m.row][m.col] == 0) {
+        boxOwner[m.row][m.col] = player;
+        scores[player - 1]++;
+        scored++;
+      }
+    }
+    return scored;
+  }
+
+  List<GameMove> getAvailableMoves() {
+    final moves = <GameMove>[];
+    for (int r = 0; r <= rows; r++)
+      for (int c = 0; c < cols; c++)
+        if (!horizontalLines[r][c])
+          moves.add(GameMove(isHorizontal: true, row: r, col: c));
+    for (int r = 0; r < rows; r++)
+      for (int c = 0; c <= cols; c++)
+        if (!verticalLines[r][c])
+          moves.add(GameMove(isHorizontal: false, row: r, col: c));
+    return moves;
+  }
+
+  bool isTerminal() => scores[0] + scores[1] == rows * cols;
+  int evaluate() => scores[1] - scores[0];
+}
+
+class DotsAndBoxesAI {
+  final int maxDepth;
+  DotsAndBoxesAI({required this.maxDepth});
+
+  GameMove? getBestMove(GameState state) {
+    final moves = state.getAvailableMoves();
+    if (moves.isEmpty) return null;
+
+    final scoring = <GameMove>[];
+    final normal = <GameMove>[];
+    for (final m in moves) {
+      final t = state.copy();
+      t.applyMove(m, 2) > 0 ? scoring.add(m) : normal.add(m);
+    }
+    final ordered = [...scoring, ...normal];
+
+    GameMove? best;
+    int bestScore = -9999;
+    int alpha = -9999;
+
+    for (final m in ordered) {
+      final ns = state.copy();
+      final sc = ns.applyMove(m, 2);
+      final s = minimax(ns, maxDepth - 1, alpha, 9999, sc > 0);
+      if (s > bestScore) {
+        bestScore = s;
+        best = m;
+        alpha = max(alpha, s);
+      }
+    }
+    return best;
+  }
+
+  int minimax(
+      GameState state, int depth, int alpha, int beta, bool maximizing) {
+    if (state.isTerminal() || depth == 0) return state.evaluate();
+    final moves = state.getAvailableMoves();
+    if (maximizing) {
+      int best = -9999;
+      for (final m in moves) {
+        final ns = state.copy();
+        final sc = ns.applyMove(m, 2);
+        final e = minimax(ns, depth - 1, alpha, beta, sc > 0);
+        best = max(best, e);
+        alpha = max(alpha, e);
+        if (alpha >= beta) break;
+      }
+      return best;
+    } else {
+      int best = 9999;
+      for (final m in moves) {
+        final ns = state.copy();
+        final sc = ns.applyMove(m, 1);
+        final e = minimax(ns, depth - 1, alpha, beta, sc > 0);
+        best = min(best, e);
+        beta = min(beta, e);
+        if (beta <= alpha) break;
+      }
+      return best;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GAME SCREEN
+// ─────────────────────────────────────────────────────────────────────────────
+class GameScreen extends StatefulWidget {
+  final bool vsAI;
+  final int aiDepth;
+
+  const GameScreen({super.key, required this.vsAI, this.aiDepth = 4});
+
+  @override
+  State<GameScreen> createState() => _GameScreenState();
+}
+
+class _GameScreenState extends State<GameScreen> {
+  static const int rows = 4;
+  static const int cols = 3;
+
+  int currentPlayer = 1;
+  List<int> scores = [0, 0];
+  late List<List<bool>> horizontalLines;
+  late List<List<bool>> verticalLines;
+  late List<List<int>> boxOwner;
+  bool isAIThinking = false;
+  late DotsAndBoxesAI _ai;
+
+  // Track which player drew each line for proper coloring
+  Map<String, int> linePlayerMap = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _ai = DotsAndBoxesAI(maxDepth: widget.aiDepth);
+    _initGame();
+  }
+
+  void _initGame() {
+    horizontalLines =
+        List.generate(rows + 1, (_) => List.generate(cols, (_) => false));
+    verticalLines =
+        List.generate(rows, (_) => List.generate(cols + 1, (_) => false));
+    boxOwner = List.generate(rows, (_) => List.generate(cols, (_) => 0));
+    scores = [0, 0];
+    currentPlayer = 1;
+    isAIThinking = false;
+    linePlayerMap = {};
+  }
+
+  GameState _buildState() => GameState(
+        rows: rows,
+        cols: cols,
+        horizontalLines:
+            horizontalLines.map((r) => List<bool>.from(r)).toList(),
+        verticalLines: verticalLines.map((r) => List<bool>.from(r)).toList(),
+        boxOwner: boxOwner.map((r) => List<int>.from(r)).toList(),
+        scores: List<int>.from(scores),
+      );
+
+  Future<void> _triggerAI() async {
+    if (!widget.vsAI || currentPlayer != 2 || isAIThinking) return;
+    setState(() => isAIThinking = true);
+    await Future.delayed(const Duration(milliseconds: 400));
+    final m = _ai.getBestMove(_buildState());
+    if (m != null && mounted) {
+      if (m.isHorizontal) {
+        _applyH(m.row, m.col, aiMove: true);
+      } else {
+        _applyV(m.row, m.col, aiMove: true);
+      }
+    }
+    if (mounted) setState(() => isAIThinking = false);
+  }
+
+  void _applyH(int r, int c, {bool aiMove = false}) {
+    if (horizontalLines[r][c]) return;
+    if (!aiMove && widget.vsAI && (currentPlayer == 2 || isAIThinking)) return;
+
+    setState(() {
+      horizontalLines[r][c] = true;
+      linePlayerMap['h_${r}_$c'] = currentPlayer;
+      bool scored = false;
+      if (r > 0 && _checkBox(r - 1, c) && boxOwner[r - 1][c] == 0) {
+        boxOwner[r - 1][c] = currentPlayer;
+        scores[currentPlayer - 1]++;
+        scored = true;
+      }
+      if (r < rows && _checkBox(r, c) && boxOwner[r][c] == 0) {
+        boxOwner[r][c] = currentPlayer;
+        scores[currentPlayer - 1]++;
+        scored = true;
+      }
+      if (!scored) currentPlayer = currentPlayer == 1 ? 2 : 1;
+      _checkGameOver();
+    });
+    if (currentPlayer == 2 && widget.vsAI && !isAIThinking) _triggerAI();
+  }
+
+  void _applyV(int r, int c, {bool aiMove = false}) {
+    if (verticalLines[r][c]) return;
+    if (!aiMove && widget.vsAI && (currentPlayer == 2 || isAIThinking)) return;
+
+    setState(() {
+      verticalLines[r][c] = true;
+      linePlayerMap['v_${r}_$c'] = currentPlayer;
+      bool scored = false;
+      if (c > 0 && _checkBox(r, c - 1) && boxOwner[r][c - 1] == 0) {
+        boxOwner[r][c - 1] = currentPlayer;
+        scores[currentPlayer - 1]++;
+        scored = true;
+      }
+      if (c < cols && _checkBox(r, c) && boxOwner[r][c] == 0) {
+        boxOwner[r][c] = currentPlayer;
+        scores[currentPlayer - 1]++;
+        scored = true;
+      }
+      if (!scored) currentPlayer = currentPlayer == 1 ? 2 : 1;
+      _checkGameOver();
+    });
+    if (currentPlayer == 2 && widget.vsAI && !isAIThinking) _triggerAI();
+  }
+
+  bool _checkBox(int r, int c) =>
+      horizontalLines[r][c] &&
+      horizontalLines[r + 1][c] &&
+      verticalLines[r][c] &&
+      verticalLines[r][c + 1];
+
+  void _checkGameOver() {
+    if (scores[0] + scores[1] == rows * cols) {
+      Future.delayed(
+          const Duration(milliseconds: 400), () {
+        if (mounted) _showGameOver();
+      });
+    }
+  }
+
+  void _showGameOver() {
+    String result;
+    String title;
+    if (scores[0] > scores[1]) {
+      title = widget.vsAI ? 'You Win! 🎉' : 'Player 1 Wins! 🎉';
+      result = 'win';
+    } else if (scores[1] > scores[0]) {
+      title = widget.vsAI ? 'AI Wins! 🤖' : 'Player 2 Wins! 🎉';
+      result = 'lose';
+    } else {
+      title = "It's a Tie! 🤝";
+      result = 'draw';
+    }
+
+    // Save to history
+    GameHistory.add(GameRecord(
+      result: result,
+      score1: scores[0],
+      score2: scores[1],
+      playedAt: DateTime.now(),
+      vsAI: widget.vsAI,
+    ));
+
+    final p1c = AppSettings.player1Color;
+    final p2c = AppSettings.player2Color;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text('Game Over!',
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+                fontWeight: FontWeight.bold, fontSize: 24)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(title,
+                style: const TextStyle(
+                    fontSize: 20, fontWeight: FontWeight.w600),
+                textAlign: TextAlign.center),
+            const SizedBox(height: 20),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                _scoreChip(widget.vsAI ? 'You' : 'P1', scores[0], p1c),
+                _scoreChip(widget.vsAI ? 'AI' : 'P2', scores[1], p2c),
+              ],
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              setState(() => _initGame());
+            },
+            child: const Text('Play Again'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              Navigator.pop(context);
+            },
+            child: const Text('Home'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _scoreChip(String label, int score, Color color) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.15),
+          borderRadius: BorderRadius.circular(15),
+          border: Border.all(color: color, width: 2),
+        ),
+        child: Column(
+          children: [
+            Text(label,
+                style: TextStyle(
+                    color: color, fontWeight: FontWeight.bold)),
+            Text('$score',
+                style: TextStyle(
+                    color: color,
+                    fontSize: 24,
+                    fontWeight: FontWeight.w900)),
+          ],
+        ),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final p1c = AppSettings.player1Color;
+    final p2c = AppSettings.player2Color;
+    final accent = AppSettings.uiAccentColor;
+    final p1Label = 'You';
+    final p2Label = widget.vsAI ? 'AI 🤖' : 'P2';
+
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        leading: IconButton(
+          icon: Icon(Icons.arrow_back_ios_rounded, color: accent),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            _playerScore(1, p1Label, p1c),
+            const SizedBox(width: 16),
+            Text('D&B',
+                style: TextStyle(
+                    fontWeight: FontWeight.w900,
+                    color: accent,
+                    fontSize: 18)),
+            const SizedBox(width: 16),
+            _playerScore(2, p2Label, p2c),
+          ],
+        ),
+        actions: [
+          IconButton(
+            icon: Icon(Icons.refresh_rounded, color: accent),
+            onPressed: isAIThinking
+                ? null
+                : () => setState(() => _initGame()),
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          _turnIndicator(p1Label, p2Label, p1c, p2c),
+          Expanded(
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: _buildBoard(),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+            child: Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.home_rounded),
+                    label: const Text('Home'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: accent,
+                      side: BorderSide(color: accent),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: isAIThinking
+                        ? null
+                        : () => setState(() => _initGame()),
+                    icon: const Icon(Icons.refresh_rounded),
+                    label: const Text('Restart'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: accent,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20)),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _turnIndicator(
+      String p1Label, String p2Label, Color p1c, Color p2c) {
+    final color = currentPlayer == 1 ? p1c : p2c;
+    final label = currentPlayer == 1 ? p1Label : p2Label;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 300),
+      margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (isAIThinking) ...[
+            SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                  strokeWidth: 2, color: color),
+            ),
+            const SizedBox(width: 8),
+            Text('AI is thinking...',
+                style: TextStyle(
+                    color: color,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 15)),
+          ] else ...[
+            Text("$label's Turn",
+                style: TextStyle(
+                    color: color,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 15)),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _playerScore(int player, String label, Color color) {
+    final isActive = currentPlayer == player;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 300),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color:
+            isActive ? color.withOpacity(0.15) : Colors.transparent,
+        borderRadius: BorderRadius.circular(15),
+        border: isActive ? Border.all(color: color, width: 2) : null,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(label,
+              style: TextStyle(
+                  fontSize: 11,
+                  color: color,
+                  fontWeight: FontWeight.bold)),
+          Text('${scores[player - 1]}',
+              style: TextStyle(
+                  fontSize: 22,
+                  color: color,
+                  fontWeight: FontWeight.w900)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBoard() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final cell = min(
+          constraints.maxWidth / cols,
+          constraints.maxHeight / rows,
+        );
+        return SizedBox(
+          width: cell * cols,
+          height: cell * rows,
+          child: Stack(
+            children: [
+              ..._boxes(cell),
+              ..._hLines(cell),
+              ..._vLines(cell),
+              ..._dots(cell),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  List<Widget> _boxes(double cell) {
+    final list = <Widget>[];
+    for (int r = 0; r < rows; r++) {
+      for (int c = 0; c < cols; c++) {
+        if (boxOwner[r][c] != 0) {
+          final color = boxOwner[r][c] == 1
+              ? AppSettings.player1Color
+              : AppSettings.player2Color;
+          final lbl = widget.vsAI
+              ? (boxOwner[r][c] == 1 ? 'You' : 'AI')
+              : 'P${boxOwner[r][c]}';
+          list.add(Positioned(
+            left: c * cell,
+            top: r * cell,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 350),
+              width: cell,
+              height: cell,
+              color: color.withOpacity(0.28),
+              child: Center(
+                child: Text(lbl,
+                    style: TextStyle(
+                        color: color,
+                        fontWeight: FontWeight.bold,
+                        fontSize: cell * 0.18)),
+              ),
+            ),
+          ));
+        }
+      }
+    }
+    return list;
+  }
+
+  List<Widget> _hLines(double cell) {
+    final lineColor = AppSettings.lineColor;
+    final list = <Widget>[];
+    for (int r = 0; r <= rows; r++) {
+      for (int c = 0; c < cols; c++) {
+        final drawn = horizontalLines[r][c];
+        final canTap = !isAIThinking || !widget.vsAI;
+        final linePlayer = linePlayerMap['h_${r}_$c'] ?? 0;
+        final drawColor = drawn
+            ? (linePlayer == 1
+                ? AppSettings.player1Color
+                : AppSettings.player2Color)
+            : Colors.grey.shade300;
+
+        list.add(Positioned(
+          left: c * cell,
+          top: r * cell - 12,
+          child: GestureDetector(
+            onTap: canTap ? () => _applyH(r, c) : null,
+            child: Container(
+              width: cell,
+              height: 24,
+              color: Colors.transparent,
+              child: Center(
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 250),
+                  height: drawn ? 7 : 3,
+                  decoration: BoxDecoration(
+                    color: drawn ? drawColor : lineColor.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ));
+      }
+    }
+    return list;
+  }
+
+  List<Widget> _vLines(double cell) {
+    final lineColor = AppSettings.lineColor;
+    final list = <Widget>[];
+    for (int r = 0; r < rows; r++) {
+      for (int c = 0; c <= cols; c++) {
+        final drawn = verticalLines[r][c];
+        final canTap = !isAIThinking || !widget.vsAI;
+        final linePlayer = linePlayerMap['v_${r}_$c'] ?? 0;
+        final drawColor = drawn
+            ? (linePlayer == 1
+                ? AppSettings.player1Color
+                : AppSettings.player2Color)
+            : Colors.grey.shade300;
+
+        list.add(Positioned(
+          left: c * cell - 12,
+          top: r * cell,
+          child: GestureDetector(
+            onTap: canTap ? () => _applyV(r, c) : null,
+            child: Container(
+              width: 24,
+              height: cell,
+              color: Colors.transparent,
+              child: Center(
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 250),
+                  width: drawn ? 7 : 3,
+                  decoration: BoxDecoration(
+                    color: drawn ? drawColor : lineColor.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ));
+      }
+    }
+    return list;
+  }
+
+  List<Widget> _dots(double cell) {
+    final list = <Widget>[];
+    for (int r = 0; r <= rows; r++) {
+      for (int c = 0; c <= cols; c++) {
+        list.add(Positioned(
+          left: c * cell - 8,
+          top: r * cell - 8,
+          child: Container(
+            width: 16,
+            height: 16,
+            decoration: BoxDecoration(
+              color: AppSettings.isDarkMode
+                  ? Colors.grey.shade300
+                  : const Color(0xFF333333),
+              shape: BoxShape.circle,
+            ),
+          ),
+        ));
+      }
+    }
+    return list;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HOW TO PLAY SCREEN
+// ─────────────────────────────────────────────────────────────────────────────
+class HowToPlayScreen extends StatelessWidget {
+  const HowToPlayScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = AppSettings.uiAccentColor;
+    return Scaffold(
+      appBar: _buildAppBar(context, 'How To Play', accent),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _SectionHeader(icon: Icons.info_rounded, label: 'Overview', color: accent),
+            const SizedBox(height: 10),
+            _InfoCard(
+              color: accent,
+              child: const Text(
+                'Dots and Boxes is a classic two-player strategy game played on a grid of dots. '
+                'Players take turns drawing lines between adjacent dots. '
+                'The goal is to complete more boxes than your opponent.',
+                style: TextStyle(fontSize: 14.5, height: 1.6),
+              ),
+            ),
+            const SizedBox(height: 24),
+            _SectionHeader(icon: Icons.list_alt_rounded, label: 'Rules', color: accent),
+            const SizedBox(height: 10),
+            _RuleItem(number: '1', text: 'Players alternate turns. On each turn, draw one line between two horizontally or vertically adjacent dots.'),
+            _RuleItem(number: '2', text: 'If your line completes the fourth side of a box, you claim that box and get another turn immediately.'),
+            _RuleItem(number: '3', text: 'You can keep claiming boxes and taking extra turns as long as you complete boxes.'),
+            _RuleItem(number: '4', text: 'When all lines have been drawn, the player with the most boxes wins.'),
+            _RuleItem(number: '5', text: 'If both players have the same number of boxes, the game ends in a draw.'),
+            const SizedBox(height: 24),
+            _SectionHeader(icon: Icons.lightbulb_rounded, label: 'Tips & Strategy', color: const Color(0xFFFF9F1C)),
+            const SizedBox(height: 10),
+            _TipCard(
+              icon: Icons.warning_amber_rounded,
+              iconColor: const Color(0xFFFF9F1C),
+              title: 'Avoid the third side',
+              body: 'Never draw the third line of a box unless you have no other choice — it gives your opponent a free claim.',
+            ),
+            const SizedBox(height: 12),
+            _TipCard(
+              icon: Icons.link_rounded,
+              iconColor: const Color(0xFF43AA8B),
+              title: 'Chain reaction',
+              body: 'When boxes form a chain, your opponent must eventually open it. Try to force short chains and leave the long ones for yourself.',
+            ),
+            const SizedBox(height: 12),
+            _TipCard(
+              icon: Icons.control_camera_rounded,
+              iconColor: const Color(0xFF6C63FF),
+              title: 'Control the endgame',
+              body: 'The player who controls which chains open last usually wins. Think several moves ahead to stay in control.',
+            ),
+            const SizedBox(height: 24),
+            _SectionHeader(icon: Icons.smart_toy_rounded, label: 'AI Difficulty', color: const Color(0xFFE63946)),
+            const SizedBox(height: 10),
+            _DifficultyRow(label: 'Easy 😊', desc: 'Thinks 2 moves ahead — great for beginners.', color: const Color(0xFF43AA8B)),
+            const SizedBox(height: 8),
+            _DifficultyRow(label: 'Medium 🤔', desc: 'Thinks 4 moves ahead — a real challenge.', color: const Color(0xFFFF9F1C)),
+            const SizedBox(height: 8),
+            _DifficultyRow(label: 'Hard 🤖', desc: 'Thinks 7 moves ahead — very tough to beat!', color: const Color(0xFFE63946)),
+            const SizedBox(height: 32),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  const _SectionHeader({required this.icon, required this.label, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(icon, color: color, size: 22),
+        const SizedBox(width: 8),
+        Text(label,
+            style: TextStyle(
+                fontSize: 18, fontWeight: FontWeight.w800, color: color)),
+      ],
+    );
+  }
+}
+
+class _InfoCard extends StatelessWidget {
+  final Widget child;
+  final Color color;
+  const _InfoCard({required this.child, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.07),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withOpacity(0.25)),
+      ),
+      child: child,
+    );
+  }
+}
+
+class _RuleItem extends StatelessWidget {
+  final String number;
+  final String text;
+  const _RuleItem({required this.number, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = AppSettings.uiAccentColor;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
+            child: Center(
+              child: Text(number,
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13)),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(text,
+                  style: const TextStyle(fontSize: 14.5, height: 1.5)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TipCard extends StatelessWidget {
+  final IconData icon;
+  final Color iconColor;
+  final String title;
+  final String body;
+  const _TipCard(
+      {required this.icon,
+      required this.iconColor,
+      required this.title,
+      required this.body});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: iconColor.withOpacity(0.07),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: iconColor.withOpacity(0.3)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: iconColor, size: 26),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 15,
+                        color: iconColor)),
+                const SizedBox(height: 4),
+                Text(body,
+                    style: TextStyle(
+                        fontSize: 13.5,
+                        height: 1.5,
+                        color: Colors.grey.shade700)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DifficultyRow extends StatelessWidget {
+  final String label;
+  final String desc;
+  final Color color;
+  const _DifficultyRow(
+      {required this.label, required this.desc, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.4)),
+      ),
+      child: Row(
+        children: [
+          Container(
+              width: 10,
+              height: 10,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label,
+                    style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                        color: color)),
+                Text(desc,
+                    style: TextStyle(
+                        fontSize: 12.5, color: Colors.grey.shade600)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ABOUT SCREEN
+// ─────────────────────────────────────────────────────────────────────────────
+class AboutScreen extends StatelessWidget {
+  const AboutScreen({super.key});
+
+  static const List<Map<String, String>> _developers = [
+    {
+      'name': 'Zakaria Abdullah Al-Husseini',
+      'role': 'Team Lead & Game Logic',
+      'detail': 'Responsible for the core game engine, AI Minimax algorithm, and overall project architecture.',
+      'emoji': '🧠',
+    },
+    {
+      'name': 'Abdelrahman Mohamed Abo Al-Ata',
+      'role': 'UI / UX Design',
+      'detail': 'Designed all screens, animations, color themes, and the overall visual identity of the app.',
+      'emoji': '🎨',
+    },
+    {
+      'name': 'Ziad Mohamed Ahmed Al-Gadawi',
+      'role': 'State Management & Settings',
+      'detail': 'Implemented settings persistence, theme switching, game history tracking, and app state flow.',
+      'emoji': '⚙️',
+    },
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = AppSettings.uiAccentColor;
+    return Scaffold(
+      appBar: _buildAppBar(context, 'About', accent),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          children: [
+            // App info card
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: accent.withOpacity(0.07),
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: accent.withOpacity(0.3)),
+              ),
+              child: Column(
+                children: [
+                  SizedBox(
+                    width: 80,
+                    height: 80,
+                    child: CustomPaint(painter: LogoPainter(color: accent)),
+                  ),
+                  const SizedBox(height: 12),
+                  Text('Dots & Boxes',
+                      style: TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.w900,
+                          color: accent)),
+                  const SizedBox(height: 4),
+                  Text('Version 1.0.0',
+                      style: TextStyle(
+                          fontSize: 13, color: Colors.grey.shade500)),
+                  const SizedBox(height: 8),
+                  Text(
+                    'A modern take on the classic pencil-and-paper strategy game.\nBuilt with Flutter 💙',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        fontSize: 13.5,
+                        color: Colors.grey.shade600,
+                        height: 1.5),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 28),
+            Row(
+              children: [
+                Icon(Icons.group_rounded, color: accent, size: 22),
+                const SizedBox(width: 8),
+                Text('The Team',
+                    style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        color: accent)),
+              ],
+            ),
+            const SizedBox(height: 14),
+            ..._developers.map((dev) => _DeveloperCard(dev: dev)),
+            const SizedBox(height: 28),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: accent.withOpacity(0.06),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: accent.withOpacity(0.2)),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.school_rounded, color: accent, size: 20),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      'Faculty of Computers & Information Science\nMansoura University — 2025',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          fontSize: 13,
+                          color: Colors.grey.shade600,
+                          height: 1.5),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DeveloperCard extends StatelessWidget {
+  final Map<String, String> dev;
+  const _DeveloperCard({required this.dev});
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = AppSettings.uiAccentColor;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: accent.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: accent.withOpacity(0.2), width: 1.5),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 54,
+            height: 54,
+            decoration: BoxDecoration(
+              color: accent.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Center(
+              child: Text(dev['emoji']!,
+                  style: const TextStyle(fontSize: 26)),
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(dev['name']!,
+                    style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 15,
+                        color: accent)),
+                const SizedBox(height: 3),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: accent.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(dev['role']!,
+                      style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w600,
+                          color: accent)),
+                ),
+                const SizedBox(height: 6),
+                Text(dev['detail']!,
+                    style: TextStyle(
+                        fontSize: 13,
+                        color: Colors.grey.shade600,
+                        height: 1.45)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SHARED HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+PreferredSizeWidget _buildAppBar(
+    BuildContext context, String title, Color accent) {
+  return AppBar(
+    backgroundColor: Colors.transparent,
+    elevation: 0,
+    title: Text(title,
+        style: TextStyle(
+            color: accent, fontWeight: FontWeight.w900, fontSize: 22)),
+    leading: IconButton(
+      icon: Icon(Icons.arrow_back_ios_rounded, color: accent),
+      onPressed: () => Navigator.pop(context),
+    ),
+  );
+}
